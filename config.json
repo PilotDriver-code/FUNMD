@@ -1,0 +1,17 @@
+{
+  "_comentario": "De-para de eventos. Edite aqui sem tocar no codigo. O que nao estiver mapeado vai para AVISOS, nunca e chutado.",
+  "tipo_sac_operacao": {
+    "I": "Amortizacao",
+    "J": "Juros",
+    "M": "Juros",
+    "V": "Vencimento"
+  },
+  "tipo_codigo_op_CETIP": {
+    "60": "Juros",
+    "74": "Amortizacao",
+    "12": "Vencimento",
+    "806": "Prêmio"
+  },
+  "tipo_titulo_CETIP": ["CRI", "CRA", "DEB"],
+  "tipo_titulo_SAC": ["CRI", "CRA", "DEBNC"]
+}
