@@ -1,12 +1,13 @@
 import json
 from pathlib import Path
+import os
 
 class ErroDeCarga(Exception):
     """Falha que deve PARAR a execução (arquivos incoerentes), não virar saída."""
 
 
 def header(titulo):
-    largura = 50
+    largura = 100
 
     titulo_formatado = f" {titulo} "
     espaco_restante = largura - len(titulo_formatado)
@@ -16,6 +17,7 @@ def header(titulo):
 
     print()
     print(("-=" * 30)[:lado_esquerdo] + titulo_formatado + ("-=" * 30)[:lado_direito])
+    print("")
 
 
 def carregar_mapa_eventos(caminho="mapa_eventos.json"):
@@ -26,3 +28,17 @@ def carregar_mapa_eventos(caminho="mapa_eventos.json"):
         dados["tipo_titulo_CETIP"],
         dados["tipo_titulo_SAC"],
     )
+
+
+def limpar_terminal():
+    """Limpa o terminal, independente do sistema operacional."""
+
+    os.system('cls' if os.name in ('nt', 'dos') else 'clear')
+
+
+def salvar_arquivo_xlsx (nome, df):
+    """Salva um DataFrame em arquivo Excel (.xlsx) com o nome especificado."""
+
+    caminho_arquivo = Path(nome).with_suffix('.xlsx')
+    df.to_excel(caminho_arquivo, index=False)
+    print(f"Arquivo salvo: {caminho_arquivo}")
