@@ -1,0 +1,124 @@
+import pandas as pd
+
+
+CHAVE_ATIVO = ["base", "carteira", "ativo"]
+
+
+def separar_premio_e_complemento(df_caixa_normalizado):
+    """
+    Separa as linhas normalizadas do Caixa em dois grupos:
+      - premio      : evento == "Prêmio" (codigo 960)
+      - complemento : complemento == True (codigo 803)
+    """
+    premio = df_caixa_normalizado[
+        df_caixa_normalizado["evento"] == "Prêmio"
+    ].copy()
+
+    complemento = df_caixa_normalizado[
+        df_caixa_normalizado["complemento"] == True  # noqa: E712
+    ].copy()
+
+    return premio, complemento
+
+
+def consolidar_premio(premio):
+    """
+    Soma o premio por fundo+ativo. Cada ativo tem no maximo uma linha de premio.
+    Devolve dict {(base, carteira, ativo): valor_premio}.
+    """
+    if premio.empty:
+        return {}
+
+    premio["valor"] = pd.to_numeric(premio["valor"], errors="coerce")
+    agrupado = premio.groupby(CHAVE_ATIVO)["valor"].sum()
+
+    return {chave: valor for chave, valor in agrupado.items()}
+
+
+def consolidar_complemento(complemento):
+    """
+    Consolida o complemento (caixa) por fundo+ativo:
+      - soma o valor
+      - conta quantas linhas foram somadas
+      - marca tem_postergacao se QUALQUER linha do ativo for postergacao/estorno
+
+    Devolve dict {(base, carteira, ativo): {caixa, qtd_linhas, tem_postergacao}}.
+    """
+    if complemento.empty:
+        return {}
+
+    complemento["valor"] = pd.to_numeric(complemento["valor"], errors="coerce")
+
+    resultado = {}
+    for chave, grupo in complemento.groupby(CHAVE_ATIVO):
+        resultado[chave] = {
+            "caixa": grupo["valor"].sum(),
+            "qtd_linhas": len(grupo),
+            "tem_postergacao": bool(grupo["postergacao"].any()),
+        }
+
+    return resultado
+
+
+def montar_linha_consolidada(chave, premio_por_ativo, complemento_por_ativo):
+    """Monta a linha final (opcao B) para um ativo: premio + caixa juntos."""
+    base, carteira, ativo = chave
+
+    dados_complemento = complemento_por_ativo.get(chave, {})
+
+    return {
+        "base": base,
+        "carteira": carteira,
+        "ativo": ativo,
+        "premio": premio_por_ativo.get(chave, 0.0),
+        "caixa": dados_complemento.get("caixa", 0.0),
+        "qtd_linhas_caixa": dados_complemento.get("qtd_linhas", 0),
+        "tem_postergacao": dados_complemento.get("tem_postergacao", False),
+    }
+
+
+def montar_diagnostico_consolidacao(df_caixa_normalizado, resultado):
+    """Diagnostico do processo."""
+    return {
+        "linhas_caixa_entrada": len(df_caixa_normalizado),
+        "ativos_consolidados": len(resultado),
+        "ativos_com_premio": int((resultado["premio"] != 0).sum()) if len(resultado) else 0,
+        "ativos_com_caixa": int((resultado["caixa"] != 0).sum()) if len(resultado) else 0,
+        "ativos_com_postergacao": int(resultado["tem_postergacao"].sum()) if len(resultado) else 0,
+    }
+
+
+def consolidar_CAIXA(df_caixa_normalizado):
+    """
+    Consolida o Caixa por fundo+ativo (opcao B: uma linha por ativo).
+
+    Cada linha traz:
+      base · carteira · ativo · premio · caixa · qtd_linhas_caixa · tem_postergacao
+
+    - premio: soma dos lancamentos 960 (evento comparavel com a CETIP)
+    - caixa : soma dos lancamentos 803 (complemento do total do ativo)
+    - qtd_linhas_caixa: quantas linhas de complemento foram somadas
+    - tem_postergacao : True se qualquer lancamento do ativo for postergacao/estorno
+    """
+    if df_caixa_normalizado is None or df_caixa_normalizado.empty:
+        vazio = pd.DataFrame(columns=CHAVE_ATIVO + [
+            "premio", "caixa", "qtd_linhas_caixa", "tem_postergacao"])
+        return vazio, montar_diagnostico_consolidacao(pd.DataFrame(), vazio)
+
+    premio, complemento = separar_premio_e_complemento(df_caixa_normalizado)
+
+    premio_por_ativo = consolidar_premio(premio)
+    complemento_por_ativo = consolidar_complemento(complemento)
+
+    # uniao de todos os ativos que tem premio OU complemento
+    todos_ativos = set(premio_por_ativo) | set(complemento_por_ativo)
+
+    linhas = [
+        montar_linha_consolidada(chave, premio_por_ativo, complemento_por_ativo)
+        for chave in sorted(todos_ativos)
+    ]
+
+    resultado = pd.DataFrame(linhas)
+    diagnostico = montar_diagnostico_consolidacao(df_caixa_normalizado, resultado)
+
+    return resultado, diagnostico
