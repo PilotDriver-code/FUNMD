@@ -1,0 +1,86 @@
+import pandas as pd
+
+
+# a consolidacao da Operacao junta os trades ate o nivel da CETIP.
+# formato LONGO: uma linha por fundo+ativo+evento (vai para o join evento-a-evento)
+CHAVE_EVENTO = ["base", "carteira", "ativo", "evento", "data"]
+
+
+def somar_valor(grupo):
+    """Soma o valor de todas as linhas do evento (trades diferentes somam)."""
+    return pd.to_numeric(grupo["valor"], errors="coerce").sum()
+
+
+def somar_quantidade_trades_distintos(grupo):
+    """
+    Quantidade = soma dos TRADES DISTINTOS deste evento.
+
+    Cada trade conta 1x, mesmo que apareca em varios eventos (o mesmo lote de
+    papeis que paga juros + amortizacao nao pode contar a quantidade 2x).
+    Trades diferentes somam (inclui netagem +61/-61 = 0, sinais opostos).
+    """
+    if "trade" in grupo.columns and grupo["trade"].notna().any():
+        distintos = grupo.dropna(subset=["trade"]).drop_duplicates("trade")
+        return pd.to_numeric(distintos["quantidade"], errors="coerce").sum()
+    if "quantidade" in grupo.columns:
+        return pd.to_numeric(grupo["quantidade"], errors="coerce").sum()
+    return None
+
+
+def montar_origem_consolidada(grupo):
+    """Preserva a lista de pedacos (trades) que formaram o evento."""
+    if "origem" in grupo.columns:
+        return list(grupo["origem"])
+    return []
+
+
+def montar_linha_consolidada(chave, grupo):
+    """Monta a linha consolidada de um evento (fundo+ativo+evento)."""
+    base, carteira, ativo, evento, data = chave
+    return {
+        "base": base,
+        "carteira": carteira,
+        "ativo": ativo,
+        "evento": evento,
+        "data": data,
+        "valor": somar_valor(grupo),
+        "quantidade": somar_quantidade_trades_distintos(grupo),
+        "qtd_trades": grupo["trade"].nunique() if "trade" in grupo.columns else 0,
+        "origem": montar_origem_consolidada(grupo),
+    }
+
+
+def montar_diagnostico_consolidacao(df_entrada, resultado):
+    """Diagnostico do processo."""
+    return {
+        "linhas_operacao_entrada": len(df_entrada),
+        "eventos_consolidados": len(resultado),
+    }
+
+
+def consolidar_OPERACAO(df_operacao_normalizada):
+    """
+    Consolida a Operacao (que vem partida por trade) ate o nivel da CETIP.
+
+    Formato LONGO: uma linha por base+carteira+ativo+evento+data.
+      valor      = soma dos trades (trades diferentes somam)
+      quantidade = soma dos trades DISTINTOS (cada trade conta 1x por evento)
+      qtd_trades = quantos trades distintos formaram o evento
+      origem     = lista dos pedacos, para auditoria
+
+    NAO junta o Caixa. O Caixa se encontra com a Operacao so no join final.
+    """
+    if df_operacao_normalizada is None or df_operacao_normalizada.empty:
+        vazio = pd.DataFrame(columns=CHAVE_EVENTO + [
+            "valor", "quantidade", "qtd_trades", "origem"])
+        return vazio, montar_diagnostico_consolidacao(pd.DataFrame(), vazio)
+
+    linhas = [
+        montar_linha_consolidada(chave, grupo)
+        for chave, grupo in df_operacao_normalizada.groupby(CHAVE_EVENTO, dropna=False)
+    ]
+
+    resultado = pd.DataFrame(linhas)
+    diagnostico = montar_diagnostico_consolidacao(df_operacao_normalizada, resultado)
+
+    return resultado, diagnostico
