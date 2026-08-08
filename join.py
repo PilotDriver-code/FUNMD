@@ -1,7 +1,7 @@
 import pandas as pd
 
 
-CHAVE_EVENTO = ["base", "carteira", "ativo", "evento", "data"]
+CHAVE_EVENTO = ["base", "carteira", "ativo", "evento"]  # data NAO entra na chave
 CHAVE_ATIVO = ["base", "carteira", "ativo"]
 
 
@@ -10,7 +10,7 @@ CHAVE_ATIVO = ["base", "carteira", "ativo"]
 #    Operacao (juros, amortizacao, vencimento) + Premio (que so existe no Caixa)
 #    O complemento "caixa" NAO entra aqui: ele nao e evento.
 # ---------------------------------------------------------------------------
-def extrair_premio_como_evento(caixa_consolidado, data_referencia):
+def extrair_premio_como_evento(caixa_consolidado):
     """
     Transforma a coluna 'premio' do Caixa consolidado em linhas de evento,
     para que o premio possa ser comparado com o premio da CETIP (codigo 806).
@@ -28,8 +28,8 @@ def extrair_premio_como_evento(caixa_consolidado, data_referencia):
             "base": registro.base,
             "carteira": registro.carteira,
             "ativo": registro.ativo,
-            "evento": "Prêmio",
-            "data": data_referencia,
+            "evento": "Premio",
+            "data": getattr(registro, "data", None),
             "valor": registro.premio,
             "quantidade": 0,
         })
@@ -37,12 +37,12 @@ def extrair_premio_como_evento(caixa_consolidado, data_referencia):
     return pd.DataFrame(linhas)
 
 
-def montar_lado_sac_eventos(operacao_consolidada, caixa_consolidado, data_referencia):
+def montar_lado_sac_eventos(operacao_consolidada, caixa_consolidado):
     """
     Junta os eventos da Operacao com o Premio vindo do Caixa.
     Este e o lado SAC que sera comparado evento-a-evento com a CETIP.
     """
-    premio = extrair_premio_como_evento(caixa_consolidado, data_referencia)
+    premio = extrair_premio_como_evento(caixa_consolidado)
 
     partes = [p for p in (operacao_consolidada, premio)
               if p is not None and not p.empty]
@@ -65,6 +65,10 @@ def juntar_eventos(cetip_consolidada, sac_eventos):
         cetip_consolidada = pd.DataFrame(columns=CHAVE_EVENTO + ["valor"])
     if sac_eventos is None:
         sac_eventos = pd.DataFrame(columns=CHAVE_EVENTO + ["valor"])
+
+    # a data nao entra na chave; para nao duplicar coluna, tiro a da CETIP
+    if "data" in cetip_consolidada.columns:
+        cetip_consolidada = cetip_consolidada.drop(columns=["data"])
 
     comparado = pd.merge(
         sac_eventos, cetip_consolidada,
@@ -162,7 +166,7 @@ def montar_diagnostico_join(comparado, fechamento):
 
 
 def juntar_CETIP_SAC(cetip_consolidada, operacao_consolidada,
-                     caixa_consolidado, data_referencia):
+                     caixa_consolidado):
     """
     Junta as tres pontas em dois niveis:
 
@@ -175,7 +179,7 @@ def juntar_CETIP_SAC(cetip_consolidada, operacao_consolidada,
     Devolve (comparado_eventos, fechamento_ativos, diagnostico).
     """
     sac_eventos = montar_lado_sac_eventos(
-        operacao_consolidada, caixa_consolidado, data_referencia)
+        operacao_consolidada, caixa_consolidado)
 
     comparado = juntar_eventos(cetip_consolidada, sac_eventos)
 
