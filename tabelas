@@ -1,0 +1,228 @@
+import pandas as pd
+
+
+CHAVE_ATIVO = ["base", "carteira", "ativo"]
+
+EVENTO_JUROS = "Juros"
+EVENTO_AMORTIZACAO = "Amortizacao"
+EVENTO_PREMIO = "Premio"
+EVENTO_VENCIMENTO = "Vencimento"
+EVENTO_GENERICO = "Generico"
+
+# eventos com coluna propria na tela de EVENTOS
+EVENTOS_TELA_EVENTOS = [EVENTO_JUROS, EVENTO_AMORTIZACAO, EVENTO_PREMIO, EVENTO_GENERICO]
+# eventos com coluna propria na tela de VENCIMENTOS
+EVENTOS_TELA_VENCIMENTOS = [EVENTO_VENCIMENTO, EVENTO_PREMIO, EVENTO_GENERICO]
+
+
+
+
+def pegar_data(grupo):
+    """Pega a data do ativo. Como todos os arquivos sao do mesmo dia, qualquer
+    linha serve — mas linhas que vieram so da CETIP podem estar sem data."""
+    if "data" not in grupo.columns:
+        return None
+    validas = grupo["data"].dropna()
+    return validas.iloc[0] if len(validas) else None
+
+
+def somar_evento(grupo, evento, coluna_valor):
+    """Soma o valor de um evento especifico dentro do grupo do ativo."""
+    filtrado = grupo[grupo["evento"] == evento]
+    if filtrado.empty:
+        return 0.0
+    return pd.to_numeric(filtrado[coluna_valor], errors="coerce").sum()
+
+
+def listar_eventos_genericos(grupo):
+    """
+    Lista quais eventos originais cairam no generico, para voce saber do que
+    se trata sem precisar caçar no JOIN_EVENTOS.
+    Olha as colunas de origem que existirem (o merge pode criar sufixos).
+    """
+    genericos = grupo[grupo["evento"] == EVENTO_GENERICO]
+    if genericos.empty:
+        return ""
+
+    colunas_origem = [c for c in genericos.columns if c.startswith("origem")]
+    descricoes = set()
+
+    def coletar(valor):
+        if isinstance(valor, dict):
+            texto = valor.get("descricao") or valor.get("cod")
+            if texto:
+                descricoes.add(str(texto))
+            for interno in valor.values():
+                if isinstance(interno, (dict, list)):
+                    coletar(interno)
+        elif isinstance(valor, list):
+            for item in valor:
+                coletar(item)
+
+    for coluna in colunas_origem:
+        for valor in genericos[coluna]:
+            coletar(valor)
+
+    return ", ".join(sorted(descricoes))
+
+
+def montar_dados_caixa(mapa_caixa, chave):
+    """Busca caixa, contador e flag de postergacao do ativo."""
+    return mapa_caixa.get(chave, {
+        "caixa": 0.0, "qtd_linhas_caixa": 0, "tem_postergacao": False})
+
+
+def calcular_diferenca(total_cetip, total_sac):
+    """
+    Diferenca unica do ativo: CETIP - SAC (com o caixa ja somado no SAC).
+    Positivo = a CETIP tem mais que o SAC (falta valor no SAC).
+    """
+    return total_cetip - total_sac
+
+
+def montar_linha_eventos(chave, grupo, dados_caixa):
+    """Linha da tela de EVENTOS (ativo que NAO esta vencendo)."""
+    base, carteira, ativo = chave
+    caixa = dados_caixa["caixa"]
+
+    linha = {
+        "base": base,
+        "carteira": carteira,
+        "ativo": ativo,
+        "data": pegar_data(grupo),
+    }
+
+    total_cetip = 0.0
+    total_sac = 0.0
+
+    for evento in EVENTOS_TELA_EVENTOS:
+        valor_cetip = somar_evento(grupo, evento, "valor_cetip")
+        valor_sac = somar_evento(grupo, evento, "valor_sac")
+
+        linha[f"cetip_{evento.lower()}"] = valor_cetip
+        linha[f"sac_{evento.lower()}"] = valor_sac
+
+        total_cetip += valor_cetip
+        total_sac += valor_sac
+
+    linha["sac_caixa"] = caixa
+    total_sac += caixa
+
+    linha["generico_eventos"] = listar_eventos_genericos(grupo)
+    linha["diferenca"] = calcular_diferenca(total_cetip, total_sac)
+    linha["fecha"] = abs(linha["diferenca"]) < 0.01
+    linha["tem_postergacao"] = dados_caixa["tem_postergacao"]
+    linha["qtd_linhas_caixa"] = dados_caixa["qtd_linhas_caixa"]
+
+    return linha
+
+
+def montar_linha_vencimentos(chave, grupo, dados_caixa):
+    """Linha da tela de VENCIMENTOS (ativo que esta vencendo)."""
+    base, carteira, ativo = chave
+    caixa = dados_caixa["caixa"]
+
+    linha = {
+        "base": base,
+        "carteira": carteira,
+        "ativo": ativo,
+        "data": pegar_data(grupo),
+    }
+
+    total_cetip = 0.0
+    total_sac = 0.0
+
+    for evento in EVENTOS_TELA_VENCIMENTOS:
+        valor_cetip = somar_evento(grupo, evento, "valor_cetip")
+        valor_sac = somar_evento(grupo, evento, "valor_sac")
+
+        linha[f"cetip_{evento.lower()}"] = valor_cetip
+        linha[f"sac_{evento.lower()}"] = valor_sac
+
+        total_cetip += valor_cetip
+        total_sac += valor_sac
+
+    linha["sac_caixa"] = caixa
+    total_sac += caixa
+
+    linha["diferenca"] = calcular_diferenca(total_cetip, total_sac)
+    linha["fecha"] = abs(linha["diferenca"]) < 0.01
+
+    return linha
+
+
+def ativo_esta_vencendo(grupo):
+    """O ativo vence quando existe evento de Vencimento (de qualquer lado)."""
+    return (grupo["evento"] == EVENTO_VENCIMENTO).any()
+
+
+def montar_mapa_caixa(caixa_consolidado):
+    """Indexa o Caixa consolidado por (base, carteira, ativo)."""
+    if caixa_consolidado is None or caixa_consolidado.empty:
+        return {}
+
+    mapa = {}
+    for registro in caixa_consolidado.itertuples():
+        mapa[(registro.base, registro.carteira, registro.ativo)] = {
+            "caixa": registro.caixa,
+            "qtd_linhas_caixa": registro.qtd_linhas_caixa,
+            "tem_postergacao": registro.tem_postergacao,
+        }
+    return mapa
+
+
+def montar_diagnostico_tabelas(tabela_eventos, tabela_vencimentos):
+    return {
+        "ativos_em_eventos": len(tabela_eventos),
+        "ativos_em_vencimentos": len(tabela_vencimentos),
+        "eventos_que_fecham": int(tabela_eventos["fecha"].sum()) if len(tabela_eventos) else 0,
+        "vencimentos_que_fecham": int(tabela_vencimentos["fecha"].sum()) if len(tabela_vencimentos) else 0,
+        "ativos_com_postergacao": int(tabela_eventos["tem_postergacao"].sum()) if len(tabela_eventos) else 0,
+    }
+
+
+def montar_TABELAS(comparado_eventos, caixa_consolidado):
+    """
+    Transforma o join (formato longo) nas DUAS tabelas largas que alimentam
+    as telas. Cada tela tem seu proprio esquema.
+
+    TELA EVENTOS (ativo que nao vence):
+      fundo · ativo · cetip_juros/amortizacao/premio/generico
+                    · sac_juros/amortizacao/premio/generico · sac_caixa
+                    · generico_eventos · diferenca · tem_postergacao
+
+    TELA VENCIMENTOS (ativo vencendo):
+      fundo · ativo · cetip_vencimento/premio/generico
+                    · sac_vencimento/premio/generico · sac_caixa · diferenca
+
+    O ativo aparece em UMA tela so: se esta vencendo, e vencimento.
+    """
+    colunas_vazias_ev = CHAVE_ATIVO + ["diferenca", "fecha", "tem_postergacao"]
+    colunas_vazias_vc = CHAVE_ATIVO + ["diferenca", "fecha"]
+
+    if comparado_eventos is None or comparado_eventos.empty:
+        return (pd.DataFrame(columns=colunas_vazias_ev),
+                pd.DataFrame(columns=colunas_vazias_vc),
+                montar_diagnostico_tabelas(pd.DataFrame(), pd.DataFrame()))
+
+    mapa_caixa = montar_mapa_caixa(caixa_consolidado)
+
+    linhas_eventos = []
+    linhas_vencimentos = []
+
+    for chave, grupo in comparado_eventos.groupby(CHAVE_ATIVO, dropna=False):
+        dados_caixa = montar_dados_caixa(mapa_caixa, tuple(chave))
+
+        if ativo_esta_vencendo(grupo):
+            linhas_vencimentos.append(
+                montar_linha_vencimentos(chave, grupo, dados_caixa))
+        else:
+            linhas_eventos.append(
+                montar_linha_eventos(chave, grupo, dados_caixa))
+
+    tabela_eventos = pd.DataFrame(linhas_eventos) if linhas_eventos else pd.DataFrame(columns=colunas_vazias_ev)
+    tabela_vencimentos = pd.DataFrame(linhas_vencimentos) if linhas_vencimentos else pd.DataFrame(columns=colunas_vazias_vc)
+
+    diagnostico = montar_diagnostico_tabelas(tabela_eventos, tabela_vencimentos)
+
+    return tabela_eventos, tabela_vencimentos, diagnostico
